@@ -2,12 +2,7 @@
 
 set -euxo pipefail
 
-BUILD_DIR="$(pwd)/build/postgres/"
-BIN_DIR="$(pwd)/build/postgres/bin/"
-POSTGRES_USER="noisepage_user"
-POSTGRES_PASSWORD="noisepage_pass"
-POSTGRES_DB="noisepage_db"
-POSTGRES_PORT=15721
+. /home/zhanghao/code/postgres/cmudb/env/env_var.sh
 
 if ! PGPASSWORD=${POSTGRES_PASSWORD} "${BIN_DIR}"/psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -p ${POSTGRES_PORT} -c "SELECT 1" >/dev/null; then
   "${BIN_DIR}"/psql -c "create user ${POSTGRES_USER} with login password '${POSTGRES_PASSWORD}'" postgres -p ${POSTGRES_PORT}

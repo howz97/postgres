@@ -1,0 +1,44 @@
+{
+    "Table": "Farm",
+    "Columns": {
+        "farm_name": {
+            "type": "str",
+            "block_stats": {
+                "0": {
+                    "num": 6,
+                    "min": "Breakfast Lunch Dinner",
+                    "max": "Incubator",
+                    "min_len": 9,
+                    "max_len": 22
+                }
+            },
+            "num_blocks": 1,
+            "start_offset": 0
+        },
+        "min_age_weeks": {
+            "type": "float",
+            "block_stats": {
+                "0": {
+                    "num": 6,
+                    "min": 0,
+                    "max": 52
+                }
+            },
+            "num_blocks": 1,
+            "start_offset": 192
+        },
+        "max_age_weeks": {
+            "type": "float",
+            "block_stats": {
+                "0": {
+                    "num": 6,
+                    "min": 2,
+                    "max": 156
+                }
+            },
+            "num_blocks": 1,
+            "start_offset": 216
+        }
+    },
+    "Max Values Per Block": 50000
+}

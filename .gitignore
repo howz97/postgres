@@ -46,3 +46,9 @@ lib*.pc
 # CMU-DB
 .idea
 /build
+.vscode
+.cache
+cmudb/extensions/db721_fdw/.cache
+cmudb/extensions/db721_fdw/data-*.db721
+cmudb/extensions/db721_fdw/data-*.csv
+*compile_commands.json
