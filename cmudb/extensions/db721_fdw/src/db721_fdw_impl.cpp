@@ -54,8 +54,11 @@ db721_GetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
   ForeignScan *plan = (ForeignScan *)node->ss.ps.plan;
   DB721Table *table = (DB721Table *)plan->fdw_private;
-  DB721ExecState *fdw_state = (DB721ExecState *)palloc(sizeof(DB721ExecState));
-  fdw_state->Init(table);
+  MemoryContext cxt = node->ss.ps.state->es_query_cxt;
+  // exec_ctx holds all heap memory allocated by db721_fdw execution
+  MemoryContext exec_ctx =
+      AllocSetContextCreate(cxt, "db721 tuple data", ALLOCSET_DEFAULT_SIZES);
+  DB721ExecState *fdw_state = new DB721ExecState(exec_ctx, table);
   node->fdw_state = fdw_state;
 }
 
@@ -77,7 +80,6 @@ extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
 
 extern "C" void db721_EndForeignScan(ForeignScanState *node) {
   DB721ExecState *fdw_state = (DB721ExecState *)node->fdw_state;
-  fdw_state->~DB721ExecState();
-  pfree(fdw_state);
-  node->fdw_state = nullptr;
+  MemoryContextDelete(fdw_state->mem_.ctx_);
+  delete fdw_state;
 }

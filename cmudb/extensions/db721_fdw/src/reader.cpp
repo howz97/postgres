@@ -46,7 +46,8 @@ bool DB721Table::Open(const char *name) {
     elog(ERROR, "db721_fdw file %s: faild to read metadata", file_path.c_str());
     return false;
   }
-  nlohmann::json meta_json = nlohmann::json::parse(metadata);
+  // order of columns_ should match with table definition
+  nlohmann::ordered_json meta_json = nlohmann::ordered_json ::parse(metadata);
 
   // parse metadata
   max_val_block_ = meta_json["Max Values Per Block"];
@@ -95,14 +96,15 @@ void DB721Table::EstimateRows(Cardinality &match, Cardinality &total) {
   match = total;
 }
 
-ExecStateColumn::ExecStateColumn(DB721Column *c) : c_(c) {
+ExecStateColumn::ExecStateColumn(DB721Allocator *mem, DB721Column *c)
+    : c_(c), mem_(mem) {
   cur_offset_ = c_->start_offset_;
 }
 
 void ExecStateColumn::ClearBlock() {
   if (c_->type_ == DB721Type::String) {
     for (auto d : block_) {
-      pfree(d.s);
+      mem_->Free(d.s);
     }
   }
   block_.resize(0);
@@ -136,7 +138,7 @@ std::pair<DB721Data, bool> ExecStateColumn::Next(std::ifstream &ifs,
       case DB721Type::String:
         ifs.read(buffer, 32);
         uint8_t l = strlen(buffer);
-        data.s = (char *)palloc(l + 1);
+        data.s = (char *)mem_->Alloc(l + 1);
         strcpy(data.s, buffer);
         break;
       }
@@ -146,13 +148,16 @@ std::pair<DB721Data, bool> ExecStateColumn::Next(std::ifstream &ifs,
   return {block_[blk_offset_++], true};
 }
 
-DB721ExecState::DB721ExecState(DB721Table *t) { Init(t); }
+DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t) {
+  Init(ctx, t);
+}
 
-void DB721ExecState::Init(DB721Table *t) {
+void DB721ExecState::Init(MemoryContext ctx, DB721Table *t) {
+  mem_.ctx_ = ctx;
   t_ = t;
   buffer[str_max_len] = 0;
   for (DB721Column &c : t_->columns_) {
-    columns_.emplace_back(&c);
+    columns_.emplace_back(&mem_, &c);
   }
 }
 
@@ -173,7 +178,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
     case DB721Type::String:
       uint8_t vallen = strlen(data.s);
       int64 bytea_len = vallen + VARHDRSZ;
-      bytea *b = (bytea *)palloc(bytea_len);
+      bytea *b = (bytea *)mem_.Alloc(bytea_len);
       SET_VARSIZE(b, bytea_len);
       memcpy(VARDATA(b), data.s, vallen);
       slot->tts_values[attr] = PointerGetDatum(b);
@@ -186,9 +191,25 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
 
 void DB721ExecState::ReScan() {
   for (ExecStateColumn &col : columns_) {
-    col.cur_offset_ = col.c_->start_offset_;
-    col.next_blk_ = 0;
+    // Only reset blk_offset_ if block[0] is in memory
+    if (col.next_blk_ > 1) {
+      col.cur_offset_ = col.c_->start_offset_;
+      col.next_blk_ = 0;
+      col.ClearBlock();
+    }
     col.blk_offset_ = 0;
-    col.ClearBlock();
   }
+}
+
+void *DB721Allocator::Alloc(Size size) {
+  MemoryContext oldctx = MemoryContextSwitchTo(ctx_);
+  void *p = palloc(size);
+  MemoryContextSwitchTo(oldctx);
+  return p;
+}
+
+void DB721Allocator::Free(void *pointer) {
+  MemoryContext oldctx = MemoryContextSwitchTo(ctx_);
+  pfree(pointer);
+  MemoryContextSwitchTo(oldctx);
 }

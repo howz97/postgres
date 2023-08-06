@@ -4,6 +4,8 @@
 extern "C" {
 #include "postgres.h"
 #include "executor/tuptable.h"
+#include "utils/memutils.h"
+#include "utils/memdebug.h"
 }
 // TODO(WAN): Hack.
 //  Because PostgreSQL tries to be portable, it makes a bunch of global
@@ -79,9 +81,16 @@ private:
   friend class DB721ExecState;
 };
 
+class DB721Allocator {
+public:
+  void *Alloc(Size size);
+  void Free(void *pointer);
+  MemoryContext ctx_;
+};
+
 class ExecStateColumn {
 public:
-  ExecStateColumn(DB721Column *c);
+  ExecStateColumn(DB721Allocator *mem, DB721Column *c);
   ~ExecStateColumn() { ClearBlock(); };
   std::pair<DB721Data, bool> Next(std::ifstream &ifs, char *buffer);
   void ClearBlock();
@@ -92,16 +101,17 @@ public:
   uint16_t next_blk_ = 0;
   uint16_t blk_offset_ = 0;
   std::vector<DB721Data> block_;
+  DB721Allocator *mem_;
 };
 
 class DB721ExecState {
 public:
-  DB721ExecState(DB721Table *t);
-  void Init(DB721Table *t);
+  DB721ExecState(MemoryContext ctx, DB721Table *t);
+  void Init(MemoryContext ctx, DB721Table *t);
   bool Next(TupleTableSlot *slot);
   void ReScan();
 
-private:
+  DB721Allocator mem_;
   // shared table definition
   DB721Table *t_;
   char buffer[str_max_len + 1];
