@@ -13,12 +13,12 @@ extern "C" {
 
 #include "reader.h"
 
-std::unordered_map<std::string, DB721Table> tables;
+std::unordered_map<Oid, DB721Table> tables;
 
-DB721Table *open_table(const char *name) {
-  auto it = tables.find(name);
+DB721Table *open_table(Oid oid) {
+  auto it = tables.find(oid);
   if (it == tables.end()) {
-    auto [it2, ok] = tables.emplace(name, name);
+    auto [it2, ok] = tables.emplace(oid, oid);
     Assert(ok);
     it = it2;
   }
@@ -30,7 +30,7 @@ DB721Table *open_table(const char *name) {
 
 extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
                                         Oid foreigntableid) {
-  DB721Table *table = open_table("farms");
+  DB721Table *table = open_table(foreigntableid);
   table->EstimateRows(baserel->rows, baserel->tuples);
   baserel->fdw_private = table;
 }
@@ -80,6 +80,7 @@ extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
 
 extern "C" void db721_EndForeignScan(ForeignScanState *node) {
   DB721ExecState *fdw_state = (DB721ExecState *)node->fdw_state;
-  MemoryContextDelete(fdw_state->mem_.ctx_);
+  MemoryContext ctx = fdw_state->mem_.ctx_;
   delete fdw_state;
+  MemoryContextDelete(ctx);
 }

@@ -6,6 +6,8 @@ extern "C" {
 #include "executor/tuptable.h"
 #include "utils/memutils.h"
 #include "utils/memdebug.h"
+#include "foreign/foreign.h"
+#include "commands/defrem.h"
 }
 // TODO(WAN): Hack.
 //  Because PostgreSQL tries to be portable, it makes a bunch of global
@@ -67,8 +69,8 @@ public:
 class DB721Table {
 public:
   DB721Table() = delete;
-  DB721Table(const char *name);
-  bool Open(const char *name);
+  DB721Table(Oid oid);
+  bool Open(Oid oid);
   bool IsOpen() { return columns_.size(); };
   void EstimateRows(Cardinality &match, Cardinality &total);
 

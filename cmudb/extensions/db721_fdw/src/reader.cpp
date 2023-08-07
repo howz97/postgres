@@ -10,18 +10,27 @@ DB721Column::~DB721Column() {
   }
 }
 
-DB721Table::DB721Table(const char *name) { Open(name); }
+DB721Table::DB721Table(Oid oid) { Open(oid); }
 
-bool DB721Table::Open(const char *name) {
+bool DB721Table::Open(Oid oid) {
   // open file
-  name_ = name;
-  auto file_path =
-      "/home/zhanghao/code/postgres/cmudb/extensions/db721_fdw/data-" + name_ +
-      ".db721";
+  ForeignTable *table = GetForeignTable(oid);
+  ListCell *lc;
+  char *file_path = nullptr;
+  foreach (lc, table->options) {
+    DefElem *def = (DefElem *)lfirst(lc);
+    if (strcmp(def->defname, "filename") == 0) {
+      file_path = defGetString(def);
+    } else if (strcmp(def->defname, "tablename") == 0) {
+      name_ = defGetString(def);
+    } else
+      elog(ERROR, "unknown option '%s'", def->defname);
+  }
+
   ifs_.open(file_path, std::ios::binary | std::ios::ate);
   if (!ifs_) {
     ifs_.exceptions();
-    elog(ERROR, "db721_fdw failed to open file %s", file_path.c_str());
+    elog(ERROR, "db721_fdw failed to open file %s", file_path);
     return false;
   }
 
@@ -32,8 +41,7 @@ bool DB721Table::Open(const char *name) {
   ifs_.seekg(fsize - sizeof(meta_size));
   ifs_.read(reinterpret_cast<char *>(&meta_size), sizeof(meta_size));
   if (!ifs_) {
-    elog(ERROR, "db721_fdw file %s: faild to read size of metadata",
-         file_path.c_str());
+    elog(ERROR, "db721_fdw file %s: faild to read size of metadata", file_path);
     return false;
   }
 
@@ -43,7 +51,7 @@ bool DB721Table::Open(const char *name) {
   metadata.resize(meta_size);
   ifs_.read(metadata.data(), meta_size);
   if (!ifs_) {
-    elog(ERROR, "db721_fdw file %s: faild to read metadata", file_path.c_str());
+    elog(ERROR, "db721_fdw file %s: faild to read metadata", file_path);
     return false;
   }
   // order of columns_ should match with table definition
