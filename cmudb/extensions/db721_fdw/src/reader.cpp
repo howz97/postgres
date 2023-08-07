@@ -4,8 +4,8 @@
 DB721Column::~DB721Column() {
   if (type_ == DB721Type::String) {
     for (auto &stat : block_stat_) {
-      pfree(stat.min_val_.s);
-      pfree(stat.max_val_.s);
+      free(stat.min_val_.s);
+      free(stat.max_val_.s);
     }
   }
 }
@@ -82,10 +82,10 @@ bool DB721Table::Open(Oid oid) {
         break;
       case DB721Type::String:
         std::string s = stat_j["min"];
-        stat.min_val_.s = (char *)palloc(s.size() + 1);
+        stat.min_val_.s = (char *)malloc(s.size() + 1);
         strcpy(stat.min_val_.s, s.c_str());
         s = stat_j["max"];
-        stat.max_val_.s = (char *)palloc(s.size() + 1);
+        stat.max_val_.s = (char *)malloc(s.size() + 1);
         strcpy(stat.max_val_.s, s.c_str());
         stat.min_str_len_ = stat_j["min_len"];
         stat.max_str_len_ = stat_j["max_len"];
@@ -181,7 +181,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
       slot->tts_values[attr] = Float4GetDatum(data.f);
       break;
     case DB721Type::Int:
-      slot->tts_values[attr] = Int32GetDatum(data.f);
+      slot->tts_values[attr] = Int32GetDatum(data.i);
       break;
     case DB721Type::String:
       uint8_t vallen = strlen(data.s);
