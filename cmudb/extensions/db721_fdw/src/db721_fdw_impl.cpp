@@ -8,6 +8,7 @@ extern "C" {
 #include "foreign/fdwapi.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
+#include "optimizer/optimizer.h"
 }
 // clang-format on
 
@@ -26,6 +27,25 @@ DB721Table *open_table(Oid oid) {
     Assert(false);
   }
   return &it->second;
+}
+
+static Bitmapset *extract_used_attributes(RelOptInfo *baserel) {
+  Bitmapset *attrs_used = nullptr;
+  ListCell *lc;
+  pull_varattnos((Node *)baserel->reltarget->exprs, baserel->relid,
+                 &attrs_used);
+
+  foreach (lc, baserel->baserestrictinfo) {
+    RestrictInfo *rinfo = (RestrictInfo *)lfirst(lc);
+
+    pull_varattnos((Node *)rinfo->clause, baserel->relid, &attrs_used);
+  }
+
+  if (bms_is_empty(attrs_used)) {
+    bms_free(attrs_used);
+    attrs_used = bms_make_singleton(1 - FirstLowInvalidHeapAttributeNumber);
+  }
+  return attrs_used;
 }
 
 extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
@@ -47,18 +67,26 @@ extern "C" ForeignScan *
 db721_GetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
                      ForeignPath *best_path, List *tlist, List *scan_clauses,
                      Plan *outer_plan) {
-  return make_foreignscan(tlist, scan_clauses, baserel->relid, NIL,
-                          (List *)baserel->fdw_private, NIL, NIL, outer_plan);
+  List *params = NIL;
+  params = lappend(params, baserel->fdw_private);
+  Bitmapset *attrs_used = extract_used_attributes(baserel);
+  params = lappend(params, attrs_used);
+  return make_foreignscan(tlist, scan_clauses, baserel->relid, NIL, params, NIL,
+                          NIL, outer_plan);
 }
 
 extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
   ForeignScan *plan = (ForeignScan *)node->ss.ps.plan;
-  DB721Table *table = (DB721Table *)plan->fdw_private;
+  List *params = plan->fdw_private;
+  DB721Table *table = (DB721Table *)list_head(params)->ptr_value;
+  Bitmapset *attrs_used = (Bitmapset *)list_second_cell(params)->ptr_value;
   MemoryContext cxt = node->ss.ps.state->es_query_cxt;
+  TupleDesc tupleDesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
   // exec_ctx holds all heap memory allocated by db721_fdw execution
   MemoryContext exec_ctx =
       AllocSetContextCreate(cxt, "db721 tuple data", ALLOCSET_DEFAULT_SIZES);
-  DB721ExecState *fdw_state = new DB721ExecState(exec_ctx, table);
+  DB721ExecState *fdw_state =
+      new DB721ExecState(exec_ctx, table, tupleDesc, attrs_used);
   node->fdw_state = fdw_state;
 }
 

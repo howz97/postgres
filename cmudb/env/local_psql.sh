@@ -2,7 +2,7 @@
 
 set -euxo pipefail
 
-. /home/zhanghao/code/postgres/cmudb/env/env_var.sh
+. /home/zhanghao/code/howz97/postgres/cmudb/env/env_var.sh
 
 if ! PGPASSWORD=${POSTGRES_PASSWORD} ${BIN_DIR}/psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -p ${POSTGRES_PORT} -c "SELECT 1" >/dev/null; then
   "${BIN_DIR}"/psql -c "create user ${POSTGRES_USER} with login password '${POSTGRES_PASSWORD}'" postgres -p ${POSTGRES_PORT}

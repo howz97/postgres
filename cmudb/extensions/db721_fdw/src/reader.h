@@ -85,6 +85,7 @@ private:
 
 class DB721Allocator {
 public:
+  DB721Allocator(MemoryContext ctx) : ctx_(ctx){};
   void *Alloc(Size size);
   void Free(void *pointer);
   MemoryContext ctx_;
@@ -108,14 +109,16 @@ public:
 
 class DB721ExecState {
 public:
-  DB721ExecState(MemoryContext ctx, DB721Table *t);
-  void Init(MemoryContext ctx, DB721Table *t);
+  DB721ExecState(MemoryContext ctx, DB721Table *t, TupleDesc tpdesc,
+                 Bitmapset *attrs_used);
   bool Next(TupleTableSlot *slot);
   void ReScan();
 
   DB721Allocator mem_;
   // shared table definition
   DB721Table *t_;
-  char buffer[str_max_len + 1];
+  TupleDesc tuple_desc_;
+  char buffer_[str_max_len + 1];
+  std::vector<int8> map_;
   std::vector<ExecStateColumn> columns_;
 };

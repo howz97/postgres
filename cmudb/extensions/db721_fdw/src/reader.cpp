@@ -1,6 +1,8 @@
 #include "reader.h"
 #include <nlohmann/json.hpp>
 
+#include "access/sysattr.h"
+
 DB721Column::~DB721Column() {
   if (type_ == DB721Type::String) {
     for (auto &stat : block_stat_) {
@@ -156,23 +158,53 @@ std::pair<DB721Data, bool> ExecStateColumn::Next(std::ifstream &ifs,
   return {block_[blk_offset_++], true};
 }
 
-DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t) {
-  Init(ctx, t);
+char *tolowercase(const char *input, char *output) {
+  Assert(strlen(input) < NAMEDATALEN - 1);
+  int i = 0;
+  do {
+    output[i] = tolower(input[i]);
+  } while (input[i++]);
+  return output;
 }
 
-void DB721ExecState::Init(MemoryContext ctx, DB721Table *t) {
-  mem_.ctx_ = ctx;
-  t_ = t;
-  buffer[str_max_len] = 0;
-  for (DB721Column &c : t_->columns_) {
-    columns_.emplace_back(&mem_, &c);
+DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
+                               TupleDesc tpdesc, Bitmapset *attrs_used)
+    : mem_(ctx), t_(t), tuple_desc_(tpdesc) {
+  buffer_[str_max_len] = 0;
+  map_.resize(tpdesc->natts);
+  char field_name[255];
+  char col_name[255];
+  for (int i = 0; i < tpdesc->natts; i++) {
+    map_[i] = -1;
+    /* Skip columns we don't intend to use in query */
+    AttrNumber attnum = i + 1 - FirstLowInvalidHeapAttributeNumber;
+    if (!bms_is_member(attnum, attrs_used))
+      continue;
+    const char *attname = NameStr(TupleDescAttr(tpdesc, i)->attname);
+    tolowercase(attname, field_name);
+    DB721Column *col = nullptr;
+    for (DB721Column &c : t_->columns_) {
+      tolowercase(c.name_.c_str(), col_name);
+      if (strcmp(field_name, col_name) == 0) {
+        col = &c;
+        break;
+      }
+    }
+    Assert(col);
+    columns_.emplace_back(&mem_, col);
+    map_[i] = columns_.size() - 1;
   }
 }
 
 bool DB721ExecState::Next(TupleTableSlot *slot) {
   for (int attr = 0; attr < slot->tts_tupleDescriptor->natts; attr++) {
-    ExecStateColumn &col = columns_[attr];
-    auto [data, ok] = col.Next(t_->ifs_, buffer);
+    if (map_[attr] < 0) {
+      slot->tts_isnull[attr] = true;
+      continue;
+    }
+    slot->tts_isnull[attr] = false;
+    ExecStateColumn &col = columns_[map_[attr]];
+    auto [data, ok] = col.Next(t_->ifs_, buffer_);
     if (unlikely(!ok)) {
       return false;
     }
