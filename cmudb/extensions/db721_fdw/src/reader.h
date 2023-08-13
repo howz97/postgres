@@ -1,13 +1,14 @@
 #pragma once
 
-// clang-format off
 extern "C" {
 #include "postgres.h"
-#include "executor/tuptable.h"
-#include "utils/memutils.h"
-#include "utils/memdebug.h"
-#include "foreign/foreign.h"
+
 #include "commands/defrem.h"
+#include "executor/tuptable.h"
+#include "foreign/foreign.h"
+#include "utils/lsyscache.h"
+#include "utils/memdebug.h"
+#include "utils/memutils.h"
 }
 // TODO(WAN): Hack.
 //  Because PostgreSQL tries to be portable, it makes a bunch of global
@@ -25,16 +26,26 @@ extern "C" {
 #undef dgettext
 #undef ngettext
 #undef dngettext
-// clang-format on
 
 #include <fstream>
+#include <list>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-constexpr uint8_t str_max_len = 32;
+/*
+ * Restriction
+ */
+struct Filter {
+  AttrNumber attnum;
+  int strategy;
+  Const *value;
+};
 
-enum class DB721Type { Float, Int, String };
+enum class DB721Type : uint8_t { Float, Int, String };
+constexpr Oid pg_oid[] = {FLOAT4OID, INT4OID, TEXTOID};
+constexpr uint8_t str_sz = 32;
+constexpr uint8_t data_size[] = {4, 4, str_sz};
 
 union DB721Data {
   float f;
@@ -58,6 +69,7 @@ public:
 class DB721Column {
 public:
   ~DB721Column();
+  Bitmapset *ApplyFilter(Bitmapset *bms, const Filter *filter);
 
   std::string name_;
   DB721Type type_;
@@ -72,15 +84,21 @@ public:
   DB721Table(Oid oid);
   bool Open(Oid oid);
   bool IsOpen() { return columns_.size(); };
-  void EstimateRows(Cardinality &match, Cardinality &total);
+  Cardinality TotalRows();
 
-private:
   std::string name_;
   // the maximum number of values in each block
   uint16_t max_val_block_;
   std::vector<DB721Column> columns_;
   std::ifstream ifs_;
   friend class DB721ExecState;
+};
+
+struct DB721PlanState {
+  Cardinality EstimateRows(const std::list<Filter> &filters);
+  DB721Table *table_;
+  Bitmapset *attrs_used_;
+  List *skip_blocks_;
 };
 
 class DB721Allocator {
@@ -93,24 +111,28 @@ public:
 
 class ExecStateColumn {
 public:
-  ExecStateColumn(DB721Allocator *mem, DB721Column *c);
+  ExecStateColumn(DB721Allocator *mem, DB721Column *, Bitmapset *skip_blk);
   ~ExecStateColumn() { ClearBlock(); };
-  std::pair<DB721Data, bool> Next(std::ifstream &ifs, char *buffer);
+  uint32_t Next(std::ifstream &ifs, char *buffer, uint32_t step);
+  DB721Data Current() { return mem_block_[blk_offset_]; };
+  uint32_t CurRowID();
   void ClearBlock();
   // shared column definition
   DB721Column *c_;
   // current offset in this file
-  uint32_t cur_offset_;
-  uint16_t next_blk_ = 0;
-  uint16_t blk_offset_ = 0;
-  std::vector<DB721Data> block_;
+  uint32_t file_offset_;
+  Bitmapset *skip_blk_;
+  uint32_t rowid_ = 0;
+  int32_t cur_blk_ = -1;
+  std::vector<DB721Data> mem_block_;
+  int32_t blk_offset_ = -1;
   DB721Allocator *mem_;
 };
 
 class DB721ExecState {
 public:
   DB721ExecState(MemoryContext ctx, DB721Table *t, TupleDesc tpdesc,
-                 Bitmapset *attrs_used);
+                 Bitmapset *attrs_used, List *skip_blk);
   bool Next(TupleTableSlot *slot);
   void ReScan();
 
@@ -118,7 +140,7 @@ public:
   // shared table definition
   DB721Table *t_;
   TupleDesc tuple_desc_;
-  char buffer_[str_max_len + 1];
+  char buffer_[str_sz + 1];
   std::vector<int8> map_;
   std::vector<ExecStateColumn> columns_;
 };
