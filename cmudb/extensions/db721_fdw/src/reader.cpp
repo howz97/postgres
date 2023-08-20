@@ -82,7 +82,7 @@ Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, const Filter *filter) {
       Assert(false);
     }
     if (!satisfies)
-      bms_add_member(flt_out, blk_i);
+      flt_out = bms_add_member(flt_out, blk_i);
   }
   return flt_out;
 }
@@ -190,7 +190,7 @@ Cardinality DB721PlanState::EstimateRows(const std::list<Filter> &filters) {
     auto &col = table_->columns_[i];
     Bitmapset *flt_out = NULL;
     for (const Filter &f : filters) {
-      if (f.attnum != attnum)
+      if (f.attnum - 1 != i)
         continue;
       flt_out = col.ApplyFilter(flt_out, &f);
     }
@@ -203,6 +203,9 @@ Cardinality DB721PlanState::EstimateRows(const std::list<Filter> &filters) {
     }
     if (m < est_match)
       est_match = m;
+    ereport(LOG,
+            (errmsg("attribute %d filterd %d of %ld blocks, at most %f match",
+                    i, bms_num_members(flt_out), col.block_stat_.size(), m)));
   }
   return est_match;
 }
@@ -249,6 +252,8 @@ uint32_t ExecStateColumn::Next(std::ifstream &ifs, char *buffer,
       blk_offset_ = 0;
       goto read_blk;
     }
+    ereport(LOG, (errmsg("attribute '%s' load block-%d offset %d(num_val=%d)",
+                         c_->name_.c_str(), cur_blk_, blk_offset_, num_val)));
     if (blk_offset_) {
       file_offset_ += blk_offset_ * dsize;
       num_val -= blk_offset_;

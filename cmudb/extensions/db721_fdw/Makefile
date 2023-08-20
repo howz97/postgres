@@ -27,3 +27,6 @@ override PG_CXXFLAGS += -Wno-register 	# PostgreSQL uses the register storage cl
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+# OUT := $(shell sudo apt update)
+# OUT := $(shell sudo apt install -y nlohmann-json3-dev)

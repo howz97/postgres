@@ -64,7 +64,6 @@ static int get_strategy(Oid type, Oid opno, Oid am) {
   return get_op_opfamily_strategy(opno, opfamily);
 }
 
-// Build a list of expressions we can use to filter out row groups.
 std::list<Filter> extract_filters(List *scan_clauses) {
   std::list<Filter> filters;
   ListCell *lc;
@@ -178,6 +177,8 @@ extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
   baserel->tuples = fdw_private->table_->TotalRows();
   baserel->rows = fdw_private->EstimateRows(filters);
   baserel->fdw_private = fdw_private;
+  ereport(LOG, (errmsg("GetForeignRelSize total %f rows, at most %f match",
+                       baserel->tuples, baserel->rows)));
 }
 
 extern "C" void db721_GetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
