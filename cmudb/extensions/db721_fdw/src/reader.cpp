@@ -5,7 +5,6 @@ extern "C" {
 #include "access/nbtree.h"
 #include "access/sysattr.h"
 #include "utils/builtins.h"
-#include "utils/typcache.h"
 }
 
 Datum DB721GetDatum(DB721Type typ, DB721Data data) {
@@ -30,52 +29,34 @@ DB721Column::~DB721Column() {
   }
 }
 
-Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, const Filter *filter) {
-  FmgrInfo finfo;
+Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, Filter *filter) {
+  FmgrInfo *finfo = &filter->finfo;
   int collid = filter->value->constcollid;
-  int strategy = filter->strategy;
   Datum val = filter->value->constvalue;
-
-  {
-    // look up FmgrInfo
-    Oid cmp_proc_oid;
-    TypeCacheEntry *tce_1, *tce_2;
-    tce_1 =
-        lookup_type_cache(filter->value->consttype, TYPECACHE_BTREE_OPFAMILY);
-    tce_2 = lookup_type_cache(pg_oid[uint8_t(type_)], TYPECACHE_BTREE_OPFAMILY);
-    cmp_proc_oid = get_opfamily_proc(tce_1->btree_opf, tce_1->btree_opintype,
-                                     tce_2->btree_opintype, BTORDER_PROC);
-    fmgr_info(cmp_proc_oid, &finfo);
-  }
-
   for (uint32_t blk_i = 0; blk_i < block_stat_.size(); ++blk_i) {
     if (bms_is_member(blk_i, flt_out))
       continue;
     DB721BlockStat &blk_stat = block_stat_[blk_i];
     bool satisfies;
-    switch (strategy) {
+    switch (filter->strategy) {
     case BTLessStrategyNumber:
     case BTLessEqualStrategyNumber: {
       Datum lower = DB721GetDatum(type_, blk_stat.min_val_);
-      int cmpres = FunctionCall2Coll(&finfo, collid, val, lower);
-      satisfies = (strategy == BTLessStrategyNumber && cmpres > 0) ||
-                  (strategy == BTLessEqualStrategyNumber && cmpres >= 0);
+      satisfies = filter->Check(lower);
       break;
     }
     case BTGreaterStrategyNumber:
     case BTGreaterEqualStrategyNumber: {
       Datum upper = DB721GetDatum(type_, blk_stat.max_val_);
-      int cmpres = FunctionCall2Coll(&finfo, collid, val, upper);
-      satisfies = (strategy == BTGreaterStrategyNumber && cmpres < 0) ||
-                  (strategy == BTGreaterEqualStrategyNumber && cmpres <= 0);
+      satisfies = filter->Check(upper);
       break;
     }
     case BTEqualStrategyNumber: {
       Datum lower = DB721GetDatum(type_, blk_stat.min_val_);
       Datum upper = DB721GetDatum(type_, blk_stat.max_val_);
-      int l = FunctionCall2Coll(&finfo, collid, val, lower);
-      int u = FunctionCall2Coll(&finfo, collid, val, upper);
-      satisfies = (l >= 0 || u <= 0);
+      int l = FunctionCall2Coll(finfo, collid, lower, val);
+      int u = FunctionCall2Coll(finfo, collid, upper, val);
+      satisfies = (l <= 0 || u >= 0);
       break;
     }
     default:
@@ -181,18 +162,18 @@ Cardinality DB721Table::TotalRows() {
 }
 
 // Using bitmap can estimate more precisely, while cost more memory too.
-Cardinality DB721PlanState::EstimateRows(const std::list<Filter> &filters) {
+Cardinality DB721PlanState::EstimateRows() {
   Cardinality est_match = INFINITY;
   AttrNumber attnum = -1;
   skip_blocks_ = NIL;
+  ListCell *lc;
   while ((attnum = bms_next_member(attrs_used_, attnum)) >= 0) {
-    AttrNumber i = attnum + FirstLowInvalidHeapAttributeNumber - 1;
-    auto &col = table_->columns_[i];
+    AttrNumber attn = attnum + FirstLowInvalidHeapAttributeNumber;
+    auto &col = table_->columns_[attn - 1];
     Bitmapset *flt_out = NULL;
-    for (const Filter &f : filters) {
-      if (f.attnum - 1 != i)
-        continue;
-      flt_out = col.ApplyFilter(flt_out, &f);
+    foreach (lc, (List *)list_nth(filters_, list_length(skip_blocks_))) {
+      Filter *f = (Filter *)lfirst(lc);
+      flt_out = col.ApplyFilter(flt_out, f);
     }
 
     skip_blocks_ = lappend(skip_blocks_, flt_out);
@@ -203,16 +184,18 @@ Cardinality DB721PlanState::EstimateRows(const std::list<Filter> &filters) {
     }
     if (m < est_match)
       est_match = m;
+    /*
     ereport(LOG,
             (errmsg("attribute %d filterd %d of %ld blocks, at most %f match",
                     i, bms_num_members(flt_out), col.block_stat_.size(), m)));
+    **/
   }
   return est_match;
 }
 
 ExecStateColumn::ExecStateColumn(DB721Allocator *mem, DB721Column *c,
-                                 Bitmapset *skip_blk)
-    : c_(c), skip_blk_(skip_blk), mem_(mem) {
+                                 Bitmapset *skip_blk, List *filters)
+    : c_(c), skip_blk_(skip_blk), filters_(filters), mem_(mem) {
   file_offset_ = c_->start_offset_;
 }
 
@@ -252,8 +235,10 @@ uint32_t ExecStateColumn::Next(std::ifstream &ifs, char *buffer,
       blk_offset_ = 0;
       goto read_blk;
     }
-    ereport(LOG, (errmsg("attribute '%s' load block-%d offset %d(num_val=%d)",
-                         c_->name_.c_str(), cur_blk_, blk_offset_, num_val)));
+    /*
+    ereport(LOG, (errmsg("attribute '%s' load block-%d offset
+       %d(num_val=%d)", c_->name_.c_str(), cur_blk_, blk_offset_, num_val)));
+    */
     if (blk_offset_) {
       file_offset_ += blk_offset_ * dsize;
       num_val -= blk_offset_;
@@ -306,8 +291,7 @@ char *tolowercase(const char *input, char *output) {
 }
 
 DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
-                               TupleDesc tpdesc, Bitmapset *attrs_used,
-                               List *skip_blk)
+                               TupleDesc tpdesc, DB721PlanState *plan)
     : mem_(ctx), t_(t), tuple_desc_(tpdesc) {
   buffer_[str_sz] = 0;
   map_.resize(tpdesc->natts);
@@ -317,7 +301,7 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
     map_[i] = -1;
     /* Skip columns we don't intend to use in query */
     AttrNumber attnum = i + 1 - FirstLowInvalidHeapAttributeNumber;
-    if (!bms_is_member(attnum, attrs_used))
+    if (!bms_is_member(attnum, plan->attrs_used_))
       continue;
     const char *attname = NameStr(TupleDescAttr(tpdesc, i)->attname);
     tolowercase(attname, field_name);
@@ -331,7 +315,9 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
     }
     Assert(col);
     uint16_t j = columns_.size();
-    columns_.emplace_back(&mem_, col, (Bitmapset *)list_nth(skip_blk, j));
+    columns_.emplace_back(&mem_, col,
+                          (Bitmapset *)list_nth(plan->skip_blocks_, j),
+                          (List *)list_nth(plan->filters_, j));
     map_[i] = j;
   }
 }
@@ -345,6 +331,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
     if (rid > max_rid)
       max_rid = rid;
   }
+  ListCell *lc;
   for (int16_t i = 0; i < int16_t(columns_.size()); ++i) {
     ExecStateColumn &col = columns_[i];
     Assert(col.rowid_ <= max_rid);
@@ -353,7 +340,25 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
     uint32_t rid = col.Next(t_->ifs_, buffer_, max_rid - col.rowid_);
     if (unlikely(!rid))
       return false;
-    Assert(col.rowid_ >= max_rid);
+    Assert(rid >= max_rid);
+    while (true) {
+      bool pass = true;
+      Datum d = DB721GetDatum(col.c_->type_, col.Current());
+      foreach (lc, col.filters_) {
+        Filter *f = (Filter *)lfirst(lc);
+        if (!f->Check(d)) {
+          uint32_t rid = col.Next(t_->ifs_, buffer_, 1);
+          if (unlikely(!rid))
+            return false;
+          pass = false;
+          break;
+        }
+      }
+      if (col.c_->type_ == DB721Type::String)
+        pfree((void *)d);
+      if (pass)
+        break;
+    }
     if (rid > max_rid) {
       max_rid = rid;
       i = -1;

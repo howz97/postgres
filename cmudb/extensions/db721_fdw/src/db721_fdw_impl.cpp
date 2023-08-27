@@ -32,24 +32,6 @@ DB721Table *open_table(Oid oid) {
   return &it->second;
 }
 
-static Bitmapset *extract_used_attributes(RelOptInfo *baserel) {
-  Bitmapset *attrs_used = nullptr;
-  ListCell *lc;
-  pull_varattnos((Node *)baserel->reltarget->exprs, baserel->relid,
-                 &attrs_used);
-
-  foreach (lc, baserel->baserestrictinfo) {
-    RestrictInfo *rinfo = (RestrictInfo *)lfirst(lc);
-    pull_varattnos((Node *)rinfo->clause, baserel->relid, &attrs_used);
-  }
-
-  if (bms_is_empty(attrs_used)) {
-    bms_free(attrs_used);
-    attrs_used = bms_make_singleton(1 - FirstLowInvalidHeapAttributeNumber);
-  }
-  return attrs_used;
-}
-
 static int get_strategy(Oid type, Oid opno, Oid am) {
   Oid opclass;
   Oid opfamily;
@@ -64,8 +46,12 @@ static int get_strategy(Oid type, Oid opno, Oid am) {
   return get_op_opfamily_strategy(opno, opfamily);
 }
 
-std::list<Filter> extract_filters(List *scan_clauses) {
-  std::list<Filter> filters;
+void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
+  plan_state->filters_ = NIL;
+  int num = bms_num_members(plan_state->attrs_used_);
+  for (int i = 0; i < num; ++i) {
+    plan_state->filters_ = lappend(plan_state->filters_, NIL);
+  }
   ListCell *lc;
   foreach (lc, scan_clauses) {
     Expr *clause = (Expr *)lfirst(lc);
@@ -148,23 +134,38 @@ std::list<Filter> extract_filters(List *scan_clauses) {
     } else
       continue;
 
-    Filter f{
-        .attnum = v->varattno,
-        .strategy = strategy,
-        .value = c,
-    };
-
-    /* potentially inserting elements may throw exceptions */
-    bool error = false;
-    try {
-      filters.push_back(f);
-    } catch (std::exception &e) {
-      error = true;
-    }
-    if (error)
-      elog(ERROR, "extracting row filters failed");
+    Filter *f = (Filter *)palloc(sizeof(Filter));
+    f->attnum = v->varattno;
+    f->strategy = strategy;
+    f->value = c;
+    int i = bms_member_index(plan_state->attrs_used_,
+                             f->attnum - FirstLowInvalidHeapAttributeNumber);
+    Assert(i >= 0);
+    f->Init(plan_state->table_->columns_[f->attnum - 1].type_);
+    ListCell *elems = plan_state->filters_->elements;
+    elems[i].ptr_value = lappend((List *)elems[i].ptr_value, f);
   }
-  return filters;
+}
+
+static void extract_used_attributes(DB721PlanState *plan_state,
+                                    RelOptInfo *baserel) {
+  plan_state->attrs_used_ = nullptr;
+  ListCell *lc;
+  pull_varattnos((Node *)baserel->reltarget->exprs, baserel->relid,
+                 &plan_state->attrs_used_);
+
+  foreach (lc, baserel->baserestrictinfo) {
+    RestrictInfo *rinfo = (RestrictInfo *)lfirst(lc);
+    pull_varattnos((Node *)rinfo->clause, baserel->relid,
+                   &plan_state->attrs_used_);
+  }
+
+  if (bms_is_empty(plan_state->attrs_used_)) {
+    bms_free(plan_state->attrs_used_);
+    plan_state->attrs_used_ =
+        bms_make_singleton(1 - FirstLowInvalidHeapAttributeNumber);
+  }
+  extract_filters(plan_state, baserel->baserestrictinfo);
 }
 
 extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
@@ -172,19 +173,18 @@ extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
   DB721PlanState *fdw_private =
       (DB721PlanState *)palloc(sizeof(DB721PlanState));
   fdw_private->table_ = open_table(foreigntableid);
-  fdw_private->attrs_used_ = extract_used_attributes(baserel);
-  std::list<Filter> filters = extract_filters(baserel->baserestrictinfo);
+  extract_used_attributes(fdw_private, baserel);
   baserel->tuples = fdw_private->table_->TotalRows();
-  baserel->rows = fdw_private->EstimateRows(filters);
+  baserel->rows = fdw_private->EstimateRows();
   baserel->fdw_private = fdw_private;
-  ereport(LOG, (errmsg("GetForeignRelSize total %f rows, at most %f match",
-                       baserel->tuples, baserel->rows)));
+  // ereport(LOG, (errmsg("GetForeignRelSize total %f rows, at most %f match",
+  //                      baserel->tuples, baserel->rows)));
 }
 
 extern "C" void db721_GetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
                                       Oid foreigntableid) {
   ForeignPath *path =
-      create_foreignscan_path(root, baserel, NULL, 100, 100, 100, NIL,
+      create_foreignscan_path(root, baserel, NULL, baserel->rows, 100, 100, NIL,
                               baserel->lateral_relids, NULL, NIL);
   add_path(baserel, (Path *)path);
 }
@@ -207,8 +207,7 @@ extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
   MemoryContext exec_ctx =
       AllocSetContextCreate(cxt, "db721 tuple data", ALLOCSET_DEFAULT_SIZES);
   DB721ExecState *fdw_state =
-      new DB721ExecState(exec_ctx, plan_state->table_, tupleDesc,
-                         plan_state->attrs_used_, plan_state->skip_blocks_);
+      new DB721ExecState(exec_ctx, plan_state->table_, tupleDesc, plan_state);
   node->fdw_state = fdw_state;
 }
 
