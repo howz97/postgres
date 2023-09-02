@@ -131,6 +131,7 @@ struct DB721PlanState {
   Bitmapset *attrs_used_;
   List *skip_blocks_;
   List *filters_;
+  List *ret_filters_;
 };
 
 class DB721Allocator {

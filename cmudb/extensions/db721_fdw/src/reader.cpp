@@ -323,20 +323,15 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
 }
 
 bool DB721ExecState::Next(TupleTableSlot *slot) {
-  uint32_t max_rid = 0;
   for (ExecStateColumn &col : columns_) {
-    uint32_t rid = col.Next(t_->ifs_, buffer_, 1);
-    if (unlikely(!rid))
-      return false;
-    if (rid > max_rid)
-      max_rid = rid;
+    // Debug code
+    Assert(col.rowid_ == columns_[0].rowid_);
   }
+  uint32_t max_rid = columns_[0].rowid_ + 1;
   ListCell *lc;
-  for (int16_t i = 0; i < int16_t(columns_.size()); ++i) {
+  for (uint16_t i = 0; i < uint16_t(columns_.size());) {
     ExecStateColumn &col = columns_[i];
     Assert(col.rowid_ <= max_rid);
-    if (col.rowid_ == max_rid)
-      continue;
     uint32_t rid = col.Next(t_->ifs_, buffer_, max_rid - col.rowid_);
     if (unlikely(!rid))
       return false;
@@ -347,7 +342,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
       foreach (lc, col.filters_) {
         Filter *f = (Filter *)lfirst(lc);
         if (!f->Check(d)) {
-          uint32_t rid = col.Next(t_->ifs_, buffer_, 1);
+          rid = col.Next(t_->ifs_, buffer_, 1);
           if (unlikely(!rid))
             return false;
           pass = false;
@@ -359,10 +354,19 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
       if (pass)
         break;
     }
+    Assert(rid >= max_rid);
     if (rid > max_rid) {
       max_rid = rid;
-      i = -1;
+      if (i > 0) {
+        i = 0;
+        continue;
+      }
     }
+    i++;
+  }
+  for (ExecStateColumn &col : columns_) {
+    // Debug code
+    Assert(col.rowid_ == columns_[0].rowid_);
   }
   for (int attr = 0; attr < slot->tts_tupleDescriptor->natts; attr++) {
     if (map_[attr] < 0) {

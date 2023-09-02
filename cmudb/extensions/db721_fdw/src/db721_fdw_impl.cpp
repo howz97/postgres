@@ -48,6 +48,7 @@ static int get_strategy(Oid type, Oid opno, Oid am) {
 
 void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
   plan_state->filters_ = NIL;
+  plan_state->ret_filters_ = NIL;
   int num = bms_num_members(plan_state->attrs_used_);
   for (int i = 0; i < num; ++i) {
     plan_state->filters_ = lappend(plan_state->filters_, NIL);
@@ -64,6 +65,8 @@ void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
 
     if (IsA(clause, RestrictInfo))
       clause = ((RestrictInfo *)clause)->clause;
+
+    plan_state->ret_filters_ = lappend(plan_state->ret_filters_, clause);
 
     if (IsA(clause, OpExpr)) {
       expr = (OpExpr *)clause;
@@ -134,6 +137,8 @@ void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
     } else
       continue;
 
+    plan_state->ret_filters_ = list_delete_last(plan_state->ret_filters_);
+
     Filter *f = (Filter *)palloc(sizeof(Filter));
     f->attnum = v->varattno;
     f->strategy = strategy;
@@ -193,9 +198,10 @@ extern "C" ForeignScan *
 db721_GetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
                      ForeignPath *best_path, List *tlist, List *scan_clauses,
                      Plan *outer_plan) {
-  scan_clauses = extract_actual_clauses(scan_clauses, false);
-  return make_foreignscan(tlist, scan_clauses, baserel->relid, NIL,
-                          (List *)baserel->fdw_private, NIL, NIL, outer_plan);
+  // scan_clauses = extract_actual_clauses(scan_clauses, false);
+  DB721PlanState *plan_state = (DB721PlanState *)baserel->fdw_private;
+  return make_foreignscan(tlist, plan_state->ret_filters_, baserel->relid, NIL,
+                          (List *)plan_state, NIL, NIL, outer_plan);
 }
 
 extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
