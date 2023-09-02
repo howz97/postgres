@@ -85,31 +85,29 @@ void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
        * extended in future.
        */
       if (IsA(right, Const)) {
-        if (!IsA(left, Var))
+        if (IsA(left, Var))
+          v = (Var *)left;
+        else if (IsA(left, RelabelType))
+          v = (Var *)((RelabelType *)left)->arg;
+        else
           continue;
-        v = (Var *)left;
         c = (Const *)right;
         opno = expr->opno;
       } else if (IsA(left, Const)) {
         /* reverse order (CONST OP VAR) */
-        if (!IsA(right, Var))
+        if (IsA(right, Var))
+          v = (Var *)right;
+        else if (IsA(right, RelabelType))
+          v = (Var *)((RelabelType *)right)->arg;
+        else
           continue;
-        v = (Var *)right;
         c = (Const *)left;
         opno = get_commutator(expr->opno);
       } else
         continue;
 
-      /* Not a btree family operator? */
-      if ((strategy = get_strategy(v->vartype, opno, BTREE_AM_OID)) == 0) {
-        /*
-         * Maybe it's a gin family operator? (We only support
-         * jsonb 'exists' operator at the moment)
-         */
-        if ((strategy = get_strategy(v->vartype, opno, GIN_AM_OID)) == 0 ||
-            strategy != JsonbExistsStrategyNumber)
-          continue;
-      }
+      if ((strategy = get_strategy(c->consttype, opno, BTREE_AM_OID)) == 0)
+        continue;
     } else if (IsA(clause, Var)) {
       /*
        * Trivial expression containing only a single boolean Var. This
