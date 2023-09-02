@@ -106,8 +106,13 @@ void extract_filters(DB721PlanState *plan_state, List *scan_clauses) {
       } else
         continue;
 
-      if ((strategy = get_strategy(c->consttype, opno, BTREE_AM_OID)) == 0)
-        continue;
+      if ((strategy = get_strategy(c->consttype, opno, BTREE_AM_OID)) == 0) {
+        // FIXME(zhanghao)
+        if (opno == 531)
+          strategy = RTNotEqualStrategyNumber;
+        else
+          continue;
+      }
     } else if (IsA(clause, Var)) {
       /*
        * Trivial expression containing only a single boolean Var. This

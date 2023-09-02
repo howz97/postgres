@@ -59,6 +59,9 @@ Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, Filter *filter) {
       satisfies = (l <= 0 || u >= 0);
       break;
     }
+    case RTNotEqualStrategyNumber:
+      satisfies = true;
+      break;
     default:
       Assert(false);
     }
@@ -323,10 +326,6 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
 }
 
 bool DB721ExecState::Next(TupleTableSlot *slot) {
-  for (ExecStateColumn &col : columns_) {
-    // Debug code
-    Assert(col.rowid_ == columns_[0].rowid_);
-  }
   uint32_t max_rid = columns_[0].rowid_ + 1;
   ListCell *lc;
   for (uint16_t i = 0; i < uint16_t(columns_.size());) {
@@ -363,10 +362,6 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
       }
     }
     i++;
-  }
-  for (ExecStateColumn &col : columns_) {
-    // Debug code
-    Assert(col.rowid_ == columns_[0].rowid_);
   }
   for (int attr = 0; attr < slot->tts_tupleDescriptor->natts; attr++) {
     if (map_[attr] < 0) {

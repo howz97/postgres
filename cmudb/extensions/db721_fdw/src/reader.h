@@ -67,6 +67,8 @@ struct Filter {
       return cmpres >= 0;
     case BTEqualStrategyNumber:
       return cmpres == 0;
+    case RTNotEqualStrategyNumber:
+      return cmpres != 0;
     default:
       Assert(false);
     }
