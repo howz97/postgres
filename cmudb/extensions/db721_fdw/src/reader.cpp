@@ -7,6 +7,23 @@ extern "C" {
 #include "utils/builtins.h"
 }
 
+Datum DB721GetDatum(DB721Type typ, DB721Data data, char *buffer) {
+  switch (typ) {
+  case DB721Type::Float:
+    return Float4GetDatum(data.f);
+  case DB721Type::Int:
+    return Int32GetDatum(data.i);
+  case DB721Type::String: {
+    uint8_t len = strlen(data.s);
+    SET_VARSIZE(buffer, len + VARHDRSZ);
+    memcpy(VARDATA(buffer), data.s, len);
+    return PointerGetDatum(buffer);
+  }
+  default:
+    Assert(false);
+  }
+}
+
 Datum DB721GetDatum(DB721Type typ, DB721Data data) {
   switch (typ) {
   case DB721Type::Float:
@@ -33,6 +50,7 @@ Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, Filter *filter) {
   FmgrInfo *finfo = &filter->finfo;
   int collid = filter->value->constcollid;
   Datum val = filter->value->constvalue;
+  char buffer[VARHDRSZ + str_sz];
   for (uint32_t blk_i = 0; blk_i < block_stat_.size(); ++blk_i) {
     if (bms_is_member(blk_i, flt_out))
       continue;
@@ -41,19 +59,19 @@ Bitmapset *DB721Column::ApplyFilter(Bitmapset *flt_out, Filter *filter) {
     switch (filter->strategy) {
     case BTLessStrategyNumber:
     case BTLessEqualStrategyNumber: {
-      Datum lower = DB721GetDatum(type_, blk_stat.min_val_);
+      Datum lower = DB721GetDatum(type_, blk_stat.min_val_, buffer);
       satisfies = filter->Check(lower);
       break;
     }
     case BTGreaterStrategyNumber:
     case BTGreaterEqualStrategyNumber: {
-      Datum upper = DB721GetDatum(type_, blk_stat.max_val_);
+      Datum upper = DB721GetDatum(type_, blk_stat.max_val_, buffer);
       satisfies = filter->Check(upper);
       break;
     }
     case BTEqualStrategyNumber: {
-      Datum lower = DB721GetDatum(type_, blk_stat.min_val_);
-      Datum upper = DB721GetDatum(type_, blk_stat.max_val_);
+      Datum lower = DB721GetDatum(type_, blk_stat.min_val_, buffer);
+      Datum upper = DB721GetDatum(type_, blk_stat.max_val_, buffer);
       int l = FunctionCall2Coll(finfo, collid, lower, val);
       int u = FunctionCall2Coll(finfo, collid, upper, val);
       satisfies = (l <= 0 || u >= 0);
@@ -286,7 +304,6 @@ char *tolowercase(const char *input, char *output) {
 DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
                                TupleDesc tpdesc, DB721PlanState *plan)
     : t_(t), tuple_desc_(tpdesc), mem_(ctx) {
-  buffer_[str_sz] = 0;
   map_.resize(tpdesc->natts);
   char field_name[255];
   char col_name[255];
@@ -341,8 +358,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
     Assert(rid >= max_rid);
     while (true) {
       bool pass = true;
-      // TODO: optimize
-      Datum d = DB721GetDatum(col->c_->type_, col->Current());
+      Datum d = DB721GetDatum(col->c_->type_, col->Current(), buffer_);
       foreach (lc, col->filters_) {
         Filter *f = (Filter *)lfirst(lc);
         if (!f->Check(d)) {
@@ -353,8 +369,6 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
           break;
         }
       }
-      if (col->c_->type_ == DB721Type::String)
-        pfree((void *)d);
       if (pass)
         break;
     }

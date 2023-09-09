@@ -196,7 +196,7 @@ public:
   // shared table definition
   DB721Table *t_;
   TupleDesc tuple_desc_;
-  char buffer_[str_sz + 1];
+  char buffer_[VARHDRSZ + str_sz];
   std::vector<int8> map_;
   std::vector<ExecStateColumn *> columns_p_;
   std::vector<ExecStateColumn> columns_;
