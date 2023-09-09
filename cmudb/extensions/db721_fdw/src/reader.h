@@ -146,13 +146,30 @@ public:
 
 class ExecStateColumn {
 public:
-  ExecStateColumn(DB721Allocator *mem, DB721Column *, Bitmapset *skip_blk,
-                  List *filters);
-  ~ExecStateColumn() { ClearBlock(); };
-  uint32_t Next(std::ifstream &ifs, char *buffer, uint32_t step);
-  DB721Data Current() { return mem_block_[blk_offset_]; };
+  ExecStateColumn(DB721Allocator *mem, DB721Column *c, Bitmapset *skip_blk,
+                  List *filters, uint16_t blk_sz);
+  ~ExecStateColumn() { mem_->Free(block_begin_); };
+  uint32_t Next(std::ifstream &ifs, uint32_t step);
+  DB721Data Current() {
+    DB721Data d;
+    switch (c_->type_) {
+    case DB721Type::Float:
+      memcpy(&d.f, blk_cursor_, data_size[uint8_t(DB721Type::Float)]);
+      break;
+    case DB721Type::Int:
+      memcpy(&d.i, blk_cursor_, data_size[uint8_t(DB721Type::Int)]);
+      break;
+    case DB721Type::String:
+      d.s = blk_cursor_;
+      break;
+    default:
+      Assert(false);
+    }
+    return d;
+  };
   uint32_t CurRowID();
-  void ClearBlock();
+  void RewindBlock();
+  inline uint32_t NumBefVal();
   // shared column definition
   DB721Column *c_;
   // current offset in this file
@@ -160,9 +177,10 @@ public:
   Bitmapset *skip_blk_;
   List *filters_;
   uint32_t rowid_ = 0;
-  int32_t cur_blk_ = -1;
-  std::vector<DB721Data> mem_block_;
-  int32_t blk_offset_ = -1;
+  int32_t blk_no_ = -1;
+  char *block_begin_;
+  char *block_end_;
+  char *blk_cursor_;
   DB721Allocator *mem_;
 };
 

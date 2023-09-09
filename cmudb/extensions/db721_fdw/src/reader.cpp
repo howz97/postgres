@@ -197,76 +197,61 @@ Cardinality DB721PlanState::EstimateRows() {
 }
 
 ExecStateColumn::ExecStateColumn(DB721Allocator *mem, DB721Column *c,
-                                 Bitmapset *skip_blk, List *filters)
+                                 Bitmapset *skip_blk, List *filters,
+                                 uint16_t blk_sz)
     : c_(c), skip_blk_(skip_blk), filters_(filters), mem_(mem) {
   file_offset_ = c_->start_offset_;
+  uint32_t dsize = data_size[uint8_t(c_->type_)];
+  block_begin_ = (char *)mem->Alloc(dsize * blk_sz);
+  block_end_ = block_begin_;
+  blk_cursor_ = block_begin_ - dsize;
 }
 
-void ExecStateColumn::ClearBlock() {
-  if (c_->type_ == DB721Type::String) {
-    for (auto d : mem_block_) {
-      mem_->Free(d.s);
-    }
-  }
-  mem_block_.resize(0);
+void ExecStateColumn::RewindBlock() {
+  blk_cursor_ = block_begin_ - data_size[uint8_t(c_->type_)];
 }
 
-uint32_t ExecStateColumn::Next(std::ifstream &ifs, char *buffer,
-                               uint32_t step) {
-  blk_offset_ += step;
+uint32_t ExecStateColumn::NumBefVal() {
+  return (blk_cursor_ - block_begin_) / data_size[uint8_t(c_->type_)];
+}
+
+uint32_t ExecStateColumn::Next(std::ifstream &ifs, uint32_t step) {
+  uint8_t dsize = data_size[uint8_t(c_->type_)];
+  blk_cursor_ += step * dsize;
   rowid_ += step;
-  Assert(blk_offset_ >= 0);
-  if (unlikely(uint32_t(blk_offset_) >= mem_block_.size())) {
+  Assert(blk_cursor_ >= block_begin_);
+  if (unlikely(blk_cursor_ >= block_end_)) {
     // clear current block
-    blk_offset_ -= mem_block_.size();
-    ClearBlock();
-    uint8_t dsize = data_size[uint8_t(c_->type_)];
+    blk_cursor_ -= (block_end_ - block_begin_);
   read_blk:
-    cur_blk_++;
-    Assert(cur_blk_ >= 0);
-    if (uint32_t(cur_blk_) >= c_->block_stat_.size())
+    blk_no_++;
+    Assert(blk_no_ >= 0);
+    if (uint32_t(blk_no_) >= c_->block_stat_.size())
       return 0;
-    uint16_t num_val = c_->block_stat_[cur_blk_].num_vals_;
-    if (blk_offset_ >= num_val) {
-      blk_offset_ -= num_val;
+    uint16_t num_val = c_->block_stat_[blk_no_].num_vals_;
+    if (NumBefVal() >= num_val) {
+      blk_cursor_ -= num_val * dsize;
       file_offset_ += num_val * dsize;
       goto read_blk;
     }
-    if (bms_is_member(cur_blk_, skip_blk_)) {
+    if (bms_is_member(blk_no_, skip_blk_)) {
       file_offset_ += num_val * dsize;
-      rowid_ += (num_val - blk_offset_);
-      blk_offset_ = 0;
+      rowid_ += (num_val - NumBefVal());
+      blk_cursor_ = block_begin_;
       goto read_blk;
     }
     /*
     ereport(LOG, (errmsg("attribute '%s' load block-%d offset
        %d(num_val=%d)", c_->name_.c_str(), cur_blk_, blk_offset_, num_val)));
     */
-    if (blk_offset_) {
-      file_offset_ += blk_offset_ * dsize;
-      num_val -= blk_offset_;
-      blk_offset_ = 0;
+    if (NumBefVal()) {
+      file_offset_ += blk_cursor_ - block_begin_;
+      num_val -= NumBefVal();
+      blk_cursor_ = block_begin_;
     }
     ifs.seekg(file_offset_);
-    for (uint16_t i = 0; i < num_val; ++i) {
-      DB721Data &data = mem_block_.emplace_back();
-      switch (c_->type_) {
-      case DB721Type::Float:
-        ifs.read(buffer, dsize);
-        memcpy(&data.f, buffer, dsize);
-        break;
-      case DB721Type::Int:
-        ifs.read(buffer, dsize);
-        memcpy(&data.i, buffer, dsize);
-        break;
-      case DB721Type::String:
-        ifs.read(buffer, dsize);
-        uint8_t l = strlen(buffer);
-        data.s = (char *)mem_->Alloc(l + 1);
-        strcpy(data.s, buffer);
-        break;
-      }
-    }
+    ifs.read(block_begin_, num_val * dsize);
+    block_end_ = block_begin_ + (num_val * dsize);
     file_offset_ = ifs.tellg();
   }
   Assert(rowid_ == CurRowID());
@@ -274,11 +259,13 @@ uint32_t ExecStateColumn::Next(std::ifstream &ifs, char *buffer,
 }
 
 uint32_t ExecStateColumn::CurRowID() {
-  if (unlikely(cur_blk_ < 0))
+  if (unlikely(blk_no_ < 0))
     return 0;
-  uint16_t prefix = c_->block_stat_[cur_blk_].num_vals_ - mem_block_.size();
-  uint32_t rid = 1 + prefix + blk_offset_;
-  for (auto i = 0; i < cur_blk_; ++i) {
+  uint32_t prefix =
+      c_->block_stat_[blk_no_].num_vals_ -
+      ((block_end_ - block_begin_) / data_size[uint8_t(c_->type_)]);
+  uint32_t rid = 1 + prefix + NumBefVal();
+  for (auto i = 0; i < blk_no_; ++i) {
     rid += c_->block_stat_[i].num_vals_;
   }
   return rid;
@@ -300,6 +287,7 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
   map_.resize(tpdesc->natts);
   char field_name[255];
   char col_name[255];
+  columns_.reserve(tpdesc->natts);
   for (int i = 0; i < tpdesc->natts; i++) {
     map_[i] = -1;
     /* Skip columns we don't intend to use in query */
@@ -318,9 +306,9 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
     }
     Assert(col);
     uint16_t j = columns_.size();
-    columns_.emplace_back(&mem_, col,
-                          (Bitmapset *)list_nth(plan->skip_blocks_, j),
-                          (List *)list_nth(plan->filters_, j));
+    columns_.emplace_back(
+        &mem_, col, (Bitmapset *)list_nth(plan->skip_blocks_, j),
+        (List *)list_nth(plan->filters_, j), t->max_val_block_);
     map_[i] = j;
   }
 }
@@ -331,7 +319,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
   for (uint16_t i = 0; i < uint16_t(columns_.size());) {
     ExecStateColumn &col = columns_[i];
     Assert(col.rowid_ <= max_rid);
-    uint32_t rid = col.Next(t_->ifs_, buffer_, max_rid - col.rowid_);
+    uint32_t rid = col.Next(t_->ifs_, max_rid - col.rowid_);
     if (unlikely(!rid))
       return false;
     Assert(rid >= max_rid);
@@ -341,7 +329,7 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
       foreach (lc, col.filters_) {
         Filter *f = (Filter *)lfirst(lc);
         if (!f->Check(d)) {
-          rid = col.Next(t_->ifs_, buffer_, 1);
+          rid = col.Next(t_->ifs_, 1);
           if (unlikely(!rid))
             return false;
           pass = false;
@@ -378,13 +366,11 @@ bool DB721ExecState::Next(TupleTableSlot *slot) {
 
 void DB721ExecState::ReScan() {
   for (ExecStateColumn &col : columns_) {
-    if (col.cur_blk_ > 0) {
-      col.ClearBlock();
+    if (col.blk_no_ > 0) {
       col.file_offset_ = col.c_->start_offset_;
-      col.cur_blk_ = -1;
+      col.blk_no_ = -1;
     }
-    col.cur_blk_ = 0;
-    col.blk_offset_ = -1;
+    col.RewindBlock();
     col.rowid_ = 0;
   }
 }
