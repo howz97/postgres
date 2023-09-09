@@ -169,6 +169,7 @@ Cardinality DB721PlanState::EstimateRows() {
   Cardinality est_match = INFINITY;
   AttrNumber attnum = -1;
   skip_blocks_ = NIL;
+  estimate_ = NIL;
   ListCell *lc;
   while ((attnum = bms_next_member(attrs_used_, attnum)) >= 0) {
     AttrNumber attn = attnum + FirstLowInvalidHeapAttributeNumber;
@@ -185,6 +186,7 @@ Cardinality DB721PlanState::EstimateRows() {
       if (!bms_is_member(bi, flt_out))
         m += col.block_stat_[bi].num_vals_;
     }
+    estimate_ = lappend_int(estimate_, m);
     if (m < est_match)
       est_match = m;
     /*
@@ -198,8 +200,9 @@ Cardinality DB721PlanState::EstimateRows() {
 
 ExecStateColumn::ExecStateColumn(DB721Allocator *mem, DB721Column *c,
                                  Bitmapset *skip_blk, List *filters,
-                                 uint16_t blk_sz)
-    : c_(c), skip_blk_(skip_blk), filters_(filters), mem_(mem) {
+                                 int estimate, uint16_t blk_sz)
+    : c_(c), skip_blk_(skip_blk), filters_(filters), estimate_(estimate),
+      mem_(mem) {
   file_offset_ = c_->start_offset_;
   uint32_t dsize = data_size[uint8_t(c_->type_)];
   block_begin_ = (char *)mem->Alloc(dsize * blk_sz);
@@ -282,7 +285,7 @@ char *tolowercase(const char *input, char *output) {
 
 DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
                                TupleDesc tpdesc, DB721PlanState *plan)
-    : mem_(ctx), t_(t), tuple_desc_(tpdesc) {
+    : t_(t), tuple_desc_(tpdesc), mem_(ctx) {
   buffer_[str_sz] = 0;
   map_.resize(tpdesc->natts);
   char field_name[255];
@@ -306,37 +309,51 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
     }
     Assert(col);
     uint16_t j = columns_.size();
-    columns_.emplace_back(
-        &mem_, col, (Bitmapset *)list_nth(plan->skip_blocks_, j),
-        (List *)list_nth(plan->filters_, j), t->max_val_block_);
+    columns_.emplace_back(&mem_, col,
+                          (Bitmapset *)list_nth(plan->skip_blocks_, j),
+                          (List *)list_nth(plan->filters_, j),
+                          list_nth_int(plan->estimate_, j), t->max_val_block_);
     map_[i] = j;
   }
+  columns_p_.reserve(columns_.size());
+  for (ExecStateColumn &c : columns_) {
+    columns_p_.push_back(&c);
+  }
+  std::sort(columns_p_.begin(), columns_p_.end(),
+            [](ExecStateColumn *r, ExecStateColumn *l) -> bool {
+              return r->estimate_ < l->estimate_;
+            });
+  // for (ExecStateColumn *c : columns_p_) {
+  //   ereport(LOG, (errmsg("column %s estimate match row %d",
+  //                        c->c_->name_.c_str(), c->estimate_)));
+  // }
 }
 
 bool DB721ExecState::Next(TupleTableSlot *slot) {
-  uint32_t max_rid = columns_[0].rowid_ + 1;
+  uint32_t max_rid = columns_p_[0]->rowid_ + 1;
   ListCell *lc;
-  for (uint16_t i = 0; i < uint16_t(columns_.size());) {
-    ExecStateColumn &col = columns_[i];
-    Assert(col.rowid_ <= max_rid);
-    uint32_t rid = col.Next(t_->ifs_, max_rid - col.rowid_);
+  for (uint16_t i = 0; i < uint16_t(columns_p_.size());) {
+    ExecStateColumn *col = columns_p_[i];
+    Assert(col->rowid_ <= max_rid);
+    uint32_t rid = col->Next(t_->ifs_, max_rid - col->rowid_);
     if (unlikely(!rid))
       return false;
     Assert(rid >= max_rid);
     while (true) {
       bool pass = true;
-      Datum d = DB721GetDatum(col.c_->type_, col.Current());
-      foreach (lc, col.filters_) {
+      // TODO: optimize
+      Datum d = DB721GetDatum(col->c_->type_, col->Current());
+      foreach (lc, col->filters_) {
         Filter *f = (Filter *)lfirst(lc);
         if (!f->Check(d)) {
-          rid = col.Next(t_->ifs_, 1);
+          rid = col->Next(t_->ifs_, 1);
           if (unlikely(!rid))
             return false;
           pass = false;
           break;
         }
       }
-      if (col.c_->type_ == DB721Type::String)
+      if (col->c_->type_ == DB721Type::String)
         pfree((void *)d);
       if (pass)
         break;

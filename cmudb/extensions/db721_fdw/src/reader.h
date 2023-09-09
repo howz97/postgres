@@ -134,6 +134,7 @@ struct DB721PlanState {
   List *skip_blocks_;
   List *filters_;
   List *ret_filters_;
+  List *estimate_;
 };
 
 class DB721Allocator {
@@ -147,7 +148,7 @@ public:
 class ExecStateColumn {
 public:
   ExecStateColumn(DB721Allocator *mem, DB721Column *c, Bitmapset *skip_blk,
-                  List *filters, uint16_t blk_sz);
+                  List *filters, int estimate, uint16_t blk_sz);
   ~ExecStateColumn() { mem_->Free(block_begin_); };
   uint32_t Next(std::ifstream &ifs, uint32_t step);
   DB721Data Current() {
@@ -176,6 +177,7 @@ public:
   uint32_t file_offset_;
   Bitmapset *skip_blk_;
   List *filters_;
+  uint32_t estimate_;
   uint32_t rowid_ = 0;
   int32_t blk_no_ = -1;
   char *block_begin_;
@@ -191,11 +193,12 @@ public:
   bool Next(TupleTableSlot *slot);
   void ReScan();
 
-  DB721Allocator mem_;
   // shared table definition
   DB721Table *t_;
   TupleDesc tuple_desc_;
   char buffer_[str_sz + 1];
   std::vector<int8> map_;
+  std::vector<ExecStateColumn *> columns_p_;
   std::vector<ExecStateColumn> columns_;
+  DB721Allocator mem_;
 };
