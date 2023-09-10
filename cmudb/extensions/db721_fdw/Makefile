@@ -22,11 +22,11 @@ override PG_CXXFLAGS += -Wno-register 	# PostgreSQL uses the register storage cl
 # From "man gcc",
 # > If you use multiple -O options, with or without level numbers, the last such option is the one that is effective.
 # You might want to try one of the following options:
-override PG_CXXFLAGS += -O0 -ggdb
-# override PG_CXXFLAGS += -O3
+# override PG_CXXFLAGS += -O0 -ggdb
+override PG_CXXFLAGS += -O3
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
-# OUT := $(shell sudo apt update)
-# OUT := $(shell sudo apt install -y nlohmann-json3-dev)
+OUT := $(shell sudo apt update)
+OUT := $(shell sudo apt install -y nlohmann-json3-dev)
