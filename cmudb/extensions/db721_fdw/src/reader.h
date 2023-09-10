@@ -117,7 +117,7 @@ public:
   DB721Table(Oid oid);
   bool Open(Oid oid);
   bool IsOpen() { return columns_.size(); };
-  Cardinality TotalRows();
+  uint32_t TotalRows();
 
   std::string name_;
   // the maximum number of values in each block
@@ -128,13 +128,14 @@ public:
 };
 
 struct DB721PlanState {
-  Cardinality EstimateRows();
+  uint32_t EstimateRows();
   DB721Table *table_;
   Bitmapset *attrs_used_;
   List *skip_blocks_;
   List *filters_;
   List *ret_filters_;
   List *estimate_;
+  uint32_t estm_rows_;
 };
 
 class DB721Allocator {
@@ -149,7 +150,7 @@ class ExecStateColumn {
 public:
   ExecStateColumn(DB721Allocator *mem, DB721Column *c, Bitmapset *skip_blk,
                   List *filters, int estimate, uint16_t blk_sz);
-  ~ExecStateColumn() { mem_->Free(block_begin_); };
+  // ~ExecStateColumn() { mem_->Free(block_begin_); };
   uint32_t Next(std::ifstream &ifs, uint32_t step);
   DB721Data Current() {
     DB721Data d;
@@ -183,13 +184,14 @@ public:
   char *block_begin_;
   char *block_end_;
   char *blk_cursor_;
-  DB721Allocator *mem_;
+  // DB721Allocator *mem_;
 };
 
 class DB721ExecState {
 public:
   DB721ExecState(MemoryContext ctx, DB721Table *t, TupleDesc tpdesc,
                  DB721PlanState *plan);
+  ~DB721ExecState() { MemoryContextDelete(mem_.ctx_); };
   bool Next(TupleTableSlot *slot);
   void ReScan();
 
@@ -200,5 +202,6 @@ public:
   std::vector<int8> map_;
   std::vector<ExecStateColumn *> columns_p_;
   std::vector<ExecStateColumn> columns_;
+  uint32_t estm_rows_;
   DB721Allocator mem_;
 };

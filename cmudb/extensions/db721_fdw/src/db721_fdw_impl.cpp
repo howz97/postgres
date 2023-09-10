@@ -225,10 +225,7 @@ extern "C" TupleTableSlot *db721_IterateForeignScan(ForeignScanState *node) {
   TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
   ExecClearTuple(slot);
   bool ok = fdw_state->Next(slot);
-  if (!ok) {
-    return nullptr;
-  }
-  return slot;
+  return ok ? slot : nullptr;
 }
 
 extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
@@ -238,7 +235,7 @@ extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
 
 extern "C" void db721_EndForeignScan(ForeignScanState *node) {
   DB721ExecState *fdw_state = (DB721ExecState *)node->fdw_state;
-  MemoryContext ctx = fdw_state->mem_.ctx_;
+  // MemoryContext ctx = fdw_state->mem_.ctx_;
   delete fdw_state;
-  MemoryContextDelete(ctx);
+  // MemoryContextDelete(ctx);
 }

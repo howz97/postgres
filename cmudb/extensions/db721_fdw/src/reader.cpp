@@ -175,16 +175,16 @@ bool DB721Table::Open(Oid oid) {
   return true;
 }
 
-Cardinality DB721Table::TotalRows() {
-  Cardinality total = 0;
+uint32_t DB721Table::TotalRows() {
+  uint32_t total = 0;
   for (DB721BlockStat &b : columns_[0].block_stat_)
     total += b.num_vals_;
   return total;
 }
 
 // Using bitmap can estimate more precisely, while cost more memory too.
-Cardinality DB721PlanState::EstimateRows() {
-  Cardinality est_match = INFINITY;
+uint32_t DB721PlanState::EstimateRows() {
+  estm_rows_ = UINT_MAX;
   AttrNumber attnum = -1;
   skip_blocks_ = NIL;
   estimate_ = NIL;
@@ -199,28 +199,28 @@ Cardinality DB721PlanState::EstimateRows() {
     }
 
     skip_blocks_ = lappend(skip_blocks_, flt_out);
-    Cardinality m = 0;
+    uint32_t m = 0;
     for (uint32_t bi = 0; bi < col.block_stat_.size(); ++bi) {
       if (!bms_is_member(bi, flt_out))
         m += col.block_stat_[bi].num_vals_;
     }
     estimate_ = lappend_int(estimate_, m);
-    if (m < est_match)
-      est_match = m;
+    if (m < estm_rows_)
+      estm_rows_ = m;
     /*
     ereport(LOG,
             (errmsg("attribute %d filterd %d of %ld blocks, at most %f match",
                     i, bms_num_members(flt_out), col.block_stat_.size(), m)));
     **/
   }
-  return est_match;
+  return estm_rows_;
 }
 
 ExecStateColumn::ExecStateColumn(DB721Allocator *mem, DB721Column *c,
                                  Bitmapset *skip_blk, List *filters,
                                  int estimate, uint16_t blk_sz)
-    : c_(c), skip_blk_(skip_blk), filters_(filters), estimate_(estimate),
-      mem_(mem) {
+    : c_(c), skip_blk_(skip_blk), filters_(filters), estimate_(estimate)
+/*,mem_(mem)*/ {
   file_offset_ = c_->start_offset_;
   uint32_t dsize = data_size[uint8_t(c_->type_)];
   block_begin_ = (char *)mem->Alloc(dsize * blk_sz);
@@ -275,7 +275,7 @@ uint32_t ExecStateColumn::Next(std::ifstream &ifs, uint32_t step) {
     block_end_ = block_begin_ + (num_val * dsize);
     file_offset_ = ifs.tellg();
   }
-  Assert(rowid_ == CurRowID());
+  // Assert(rowid_ == CurRowID());
   return rowid_;
 }
 
@@ -303,7 +303,9 @@ char *tolowercase(const char *input, char *output) {
 
 DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
                                TupleDesc tpdesc, DB721PlanState *plan)
-    : t_(t), tuple_desc_(tpdesc), mem_(ctx) {
+    : t_(t), tuple_desc_(tpdesc), estm_rows_(plan->estm_rows_), mem_(ctx) {
+  if (!estm_rows_)
+    return;
   map_.resize(tpdesc->natts);
   char field_name[255];
   char col_name[255];
@@ -347,6 +349,8 @@ DB721ExecState::DB721ExecState(MemoryContext ctx, DB721Table *t,
 }
 
 bool DB721ExecState::Next(TupleTableSlot *slot) {
+  if (unlikely(!estm_rows_))
+    return false;
   uint32_t max_rid = columns_p_[0]->rowid_ + 1;
   ListCell *lc;
   for (uint16_t i = 0; i < uint16_t(columns_p_.size());) {
